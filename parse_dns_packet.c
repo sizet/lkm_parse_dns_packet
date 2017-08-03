@@ -387,7 +387,7 @@ static unsigned int handle_dns_hook(
 static int __init main_init(
     void)
 {
-    // 註冊 bridge hook (NF_INET_LOCAL_OUT), 攔截 DNS 請求封包.
+    // 註冊 IPv4 hook (NF_INET_LOCAL_OUT), 攔截 DNS 請求封包.
     memset(&nf_hook_inet_local_out, 0, sizeof(nf_hook_inet_local_out));
     nf_hook_inet_local_out.pf = PF_INET;
     nf_hook_inet_local_out.hooknum = NF_INET_LOCAL_OUT;
@@ -399,7 +399,7 @@ static int __init main_init(
         goto FREE_02;
     }
 
-    // 註冊 bridge hook (NF_INET_LOCAL_IN), 攔截 DNS 回應封包.
+    // 註冊 IPv4 hook (NF_INET_LOCAL_IN), 攔截 DNS 回應封包.
     memset(&nf_hook_inet_local_in, 0, sizeof(nf_hook_inet_local_in));
     nf_hook_inet_local_in.pf = PF_INET;
     nf_hook_inet_local_in.hooknum = NF_INET_LOCAL_IN;
