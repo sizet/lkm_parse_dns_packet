@@ -19,6 +19,28 @@
 
 
 
+// class 定義.
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-2
+enum CLASS_LIST
+{
+    CLASS_IN = 1,
+    CLASS_RESERVED = 65535
+};
+
+// RR-type 定義.
+// https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml#dns-parameters-4
+enum RR_TYPE_LIST
+{
+    RR_TYPE_A = 1,
+    RR_TYPE_CNAME = 5,
+    RR_TYPE_AAAA = 28,
+    RR_TYPE_RESERVED = 65535
+};
+
+
+
+
+// DNS 封包欄位.
 struct dnshdr
 {
     __be16 id;
@@ -49,6 +71,7 @@ struct dnshdr
     __be16 arcount;
 } __attribute__((packed));
 
+// DNS 封包的 question section 欄位.
 struct dns_question_section
 {
     char *qname;
@@ -56,6 +79,7 @@ struct dns_question_section
     __u16 qclass;
 };
 
+// DNS 封包的 answer section 欄位.
 struct dns_answer_section
 {
     char *name;
@@ -74,6 +98,7 @@ struct nf_hook_ops nf_hook_inet_local_in, nf_hook_inet_local_out;
 
 
 
+// 分析 FQDN.
 static size_t parse_name(
     struct dnshdr *dns_hdr,
     char *name_field,
@@ -192,11 +217,12 @@ static size_t parse_name(
     return flen;
 }
 
+// 分析 question section.
 static size_t parse_question_section(
     struct dnshdr *dns_hdr,
     __u8 *section_loc)
 {
-    size_t scnt = 0;
+    size_t slen = 0;
     void *data_offset;
     char name_buf[256];
     size_t name_len;
@@ -208,27 +234,28 @@ static size_t parse_question_section(
     memset(&dns_qd, 0, sizeof(dns_qd));
 
     data_offset = section_loc;
-    scnt += parse_name(dns_hdr, (char *) data_offset, name_buf, sizeof(name_buf), &name_len, 0);
+    slen += parse_name(dns_hdr, (char *) data_offset, name_buf, sizeof(name_buf), &name_len, 0);
     DMSG("qname = %s", name_buf);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_qd.qtype = ntohs(*((__be16 *) data_offset));
     DMSG("qtype = 0x%04X", dns_qd.qtype);
-    scnt += sizeof(dns_qd.qtype);
+    slen += sizeof(dns_qd.qtype);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_qd.qclass = ntohs(*((__be16 *) data_offset));
     DMSG("qclass = 0x%04X", dns_qd.qclass);
-    scnt += sizeof(dns_qd.qclass);
+    slen += sizeof(dns_qd.qclass);
 
-    return scnt;
+    return slen;
 }
 
+// 分析 answer section.
 static size_t parse_answer_section(
     struct dnshdr *dns_hdr,
     __u8 *section_loc)
 {
-    size_t scnt = 0;
+    size_t slen = 0;
     void *data_offset;
     char name_buf[256];
     size_t name_len;
@@ -240,56 +267,56 @@ static size_t parse_answer_section(
     memset(&dns_an, 0, sizeof(dns_an));
 
     data_offset = section_loc;
-    scnt += parse_name(dns_hdr, (char *) data_offset, name_buf, sizeof(name_buf), &name_len, 0);
+    slen += parse_name(dns_hdr, (char *) data_offset, name_buf, sizeof(name_buf), &name_len, 0);
     DMSG("name = %s", name_buf);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_an.type = ntohs(*((__be16 *) data_offset));
     DMSG("type = 0x%04X", dns_an.type);
-    scnt += sizeof(dns_an.type);
+    slen += sizeof(dns_an.type);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_an.class = ntohs(*((__be16 *) data_offset));
     DMSG("class = 0x%04X", dns_an.class);
-    scnt += sizeof(dns_an.class);
+    slen += sizeof(dns_an.class);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_an.ttl = ntohs(*((__be32 *) data_offset));
     DMSG("ttl = %u", dns_an.ttl);
-    scnt += sizeof(dns_an.ttl);
+    slen += sizeof(dns_an.ttl);
 
-    data_offset = section_loc + scnt;
+    data_offset = section_loc + slen;
     dns_an.rdlength = ntohs(*((__be16 *) data_offset));
     DMSG("rdlength = %u", dns_an.rdlength);
-    scnt += sizeof(dns_an.rdlength);
+    slen += sizeof(dns_an.rdlength);
 
-    dns_an.rdata = section_loc + scnt;
-    scnt += dns_an.rdlength;
+    dns_an.rdata = section_loc + slen;
+    slen += dns_an.rdlength;
 
-    // IN
-    if(dns_an.class == 0x0001)
+    // 回應的資料.
+    if(dns_an.class == CLASS_IN)
     {
-        // A, AAAA, CNAME
-        if(dns_an.type == 0x0001)
+        if(dns_an.type == RR_TYPE_A)
         {
             DMSG("rdata (IPv4) = %pi4", dns_an.rdata);
         }
         else
-        if(dns_an.type == 0x0026)
+        if(dns_an.type == RR_TYPE_AAAA)
         {
             DMSG("rdata (IPv6) = %pi6", dns_an.rdata);
         }
         else
-        if(dns_an.type == 0x0005)
+        if(dns_an.type == RR_TYPE_CNAME)
         {
             parse_name(dns_hdr, (char *) dns_an.rdata, name_buf, sizeof(name_buf), &name_len, 0);
             DMSG("rdata (CNAME) = %s", name_buf);
         }
     }
 
-    return scnt;
+    return slen;
 }
 
+// 分析 DNS 封包.
 static void parse_dns(
     struct dnshdr *dns_hdr)
 {
@@ -297,6 +324,7 @@ static void parse_dns(
     __u8 *section_loc;
 
 
+    // 找出 question counter 和 answer counter.
     qdcnt = ntohs(dns_hdr->qdcount);
     ancnt = ntohs(dns_hdr->ancount);
 
@@ -308,20 +336,23 @@ static void parse_dns(
     DMSG("question count = %zd", qdcnt);
     DMSG("answer count = %zd", ancnt);
 
+    // 移動到 section 部分.
     section_loc = ((__u8 *) dns_hdr) + sizeof(struct dnshdr);
 
+    // 分析 question section.
     for(sidx = 0; sidx < qdcnt; sidx++)
     {
         DMSG("");
-        DMSG("question section %u", sidx + 1);
+        DMSG("question section %zd", sidx + 1);
         scnt = parse_question_section(dns_hdr, section_loc);
         section_loc += scnt;
     }
 
+    // 分析 answer section.
     for(sidx = 0; sidx < ancnt; sidx++)
     {
         DMSG("");
-        DMSG("answer section %u", sidx + 1);
+        DMSG("answer section %zd", sidx + 1);
         scnt = parse_answer_section(dns_hdr, section_loc);
         section_loc += scnt;
     }
@@ -329,6 +360,7 @@ static void parse_dns(
     return;
 }
 
+// 檢查哪些 DNS 封包要分析.
 static int check_dns(
     struct udphdr *udp_hdr,
     struct dnshdr *dns_hdr,
@@ -337,6 +369,7 @@ static int check_dns(
     __be16 tmp_port;
 
 
+    // 只分析埠號 53 的 DNS 封包.
     tmp_port = packet_direct == NF_INET_LOCAL_OUT ? udp_hdr->dest : udp_hdr->source;
     if(tmp_port != __constant_htons(53))
         return -1;
@@ -345,9 +378,11 @@ static int check_dns(
     if(dns_hdr->opcode != 0)
         return -1;
 
+    // 只分析沒有錯誤 (response code = 0) 的 DNS 封包.
     if(dns_hdr->rcode != 0)
         return -1;
 
+    // 只分析有提出查詢 (question count > 0) 的 DNS 封包.
     if(dns_hdr->qdcount == 0)
         return -1;
 
@@ -369,6 +404,7 @@ static unsigned int handle_dns_hook(
 
     ip4_hdr = ip_hdr(skb);
 
+    // 只分析 UDP 類型的 DNS 封包.
     if(ip4_hdr->protocol != IPPROTO_UDP)
         return NF_ACCEPT;
 
@@ -376,9 +412,11 @@ static unsigned int handle_dns_hook(
 
     dns_hdr = (struct dnshdr *) (((__u8 *) udp_hdr) + sizeof(struct udphdr));
 
+    // 檢查哪些 DNS 封包要分析.
     if(check_dns(udp_hdr, dns_hdr, hooknum) < 0)
         return NF_ACCEPT;
 
+    // 分析 DNS 封包.
     parse_dns(dns_hdr);
 
     return NF_ACCEPT;
