@@ -4,6 +4,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/version.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/ip.h>
@@ -281,7 +282,7 @@ static size_t parse_answer_section(
     slen += sizeof(dns_an.class);
 
     data_offset = section_loc + slen;
-    dns_an.ttl = ntohs(*((__be32 *) data_offset));
+    dns_an.ttl = ntohl(*((__be32 *) data_offset));
     DMSG("ttl = %u", dns_an.ttl);
     slen += sizeof(dns_an.ttl);
 
@@ -361,34 +362,88 @@ static void parse_dns(
 }
 
 // 檢查哪些 DNS 封包要分析.
-static int check_dns(
-    struct udphdr *udp_hdr,
-    struct dnshdr *dns_hdr,
+static void check_dns(
+    struct sk_buff *skb,
     unsigned int packet_direct)
 {
+    struct iphdr *ip4_hdr;
+    struct udphdr *udp_hdr;
+    struct dnshdr *dns_hdr;
     __be16 tmp_port;
 
+
+    ip4_hdr = ip_hdr(skb);
+
+    // 只分析 UDP 類型的 DNS 封包.
+    if(ip4_hdr->protocol != IPPROTO_UDP)
+        return;
+
+    udp_hdr = (struct udphdr *) (((__u8 *) ip4_hdr) + (ip4_hdr->ihl * 4));
+
+    dns_hdr = (struct dnshdr *) (((__u8 *) udp_hdr) + sizeof(struct udphdr));
 
     // 只分析埠號 53 的 DNS 封包.
     tmp_port = packet_direct == NF_INET_LOCAL_OUT ? udp_hdr->dest : udp_hdr->source;
     if(tmp_port != __constant_htons(53))
-        return -1;
+        return;
 
     // 只分析標準查詢.
     if(dns_hdr->opcode != 0)
-        return -1;
+        return;
 
     // 只分析沒有錯誤 (response code = 0) 的 DNS 封包.
     if(dns_hdr->rcode != 0)
-        return -1;
+        return;
 
     // 只分析有提出查詢 (question count > 0) 的 DNS 封包.
     if(dns_hdr->qdcount == 0)
-        return -1;
+        return;
 
-    return 0;
+    // 處理要分析的 DNS 封包.
+    parse_dns(dns_hdr);
+
+    return;
 }
 
+#if KERNEL_VERSION(4, 4, 0) <= LINUX_VERSION_CODE
+// 4.4.0 <= kernel
+static unsigned int handle_dns_hook(
+    void *priv,
+    struct sk_buff *skb,
+    const struct nf_hook_state *state)
+{
+    check_dns(skb, state->hook);
+
+    return NF_ACCEPT;
+}
+#elif (KERNEL_VERSION(4, 1, 0) <= LINUX_VERSION_CODE) && \
+      (LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0))
+// 4.1.0 <= k < 4.4.0
+static unsigned int handle_dns_hook(
+    const struct nf_hook_ops *ops,
+    struct sk_buff *skb,
+    const struct nf_hook_state *state)
+{
+    check_dns(skb, ops->hooknum);
+
+    return NF_ACCEPT;
+}
+#elif (KERNEL_VERSION(3, 13, 0) <= LINUX_VERSION_CODE) && \
+      (LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0))
+// 3.13.0 <= kernel < 4.1.0
+static unsigned int handle_dns_hook(
+    const struct nf_hook_ops *ops,
+    struct sk_buff *skb,
+    const struct net_device *in,
+    const struct net_device *out,
+    int (*okfn) (struct sk_buff *))
+{
+    check_dns(skb, ops->hooknum);
+
+    return NF_ACCEPT;
+}
+#else
+// kernel < 3.13.0
 static unsigned int handle_dns_hook(
     unsigned int hooknum,
     struct sk_buff *skb,
@@ -396,31 +451,11 @@ static unsigned int handle_dns_hook(
     const struct net_device *out,
     int (*okfn) (struct sk_buff *))
 {
-
-    struct iphdr *ip4_hdr;
-    struct udphdr *udp_hdr;
-    struct dnshdr *dns_hdr;
-
-
-    ip4_hdr = ip_hdr(skb);
-
-    // 只分析 UDP 類型的 DNS 封包.
-    if(ip4_hdr->protocol != IPPROTO_UDP)
-        return NF_ACCEPT;
-
-    udp_hdr = (struct udphdr *) (((__u8 *) ip4_hdr) + (ip4_hdr->ihl * 4));
-
-    dns_hdr = (struct dnshdr *) (((__u8 *) udp_hdr) + sizeof(struct udphdr));
-
-    // 檢查哪些 DNS 封包要分析.
-    if(check_dns(udp_hdr, dns_hdr, hooknum) < 0)
-        return NF_ACCEPT;
-
-    // 分析 DNS 封包.
-    parse_dns(dns_hdr);
+    check_dns(skb, hooknum);
 
     return NF_ACCEPT;
 }
+#endif
 
 static int __init main_init(
     void)
@@ -431,11 +466,19 @@ static int __init main_init(
     nf_hook_inet_local_out.hooknum = NF_INET_LOCAL_OUT;
     nf_hook_inet_local_out.priority = NF_IP_PRI_FIRST;
     nf_hook_inet_local_out.hook = handle_dns_hook;
+#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
+    if(nf_register_net_hook(&init_net, &nf_hook_inet_local_out) < 0)
+    {
+        DMSG("call nf_register_net_hook(NF_INET_LOCAL_OUT) fail");
+        goto FREE_02;
+    }
+#else
     if(nf_register_hook(&nf_hook_inet_local_out) < 0)
     {
         DMSG("call nf_register_hook(NF_INET_LOCAL_OUT) fail");
         goto FREE_02;
     }
+#endif
 
     // 註冊 IPv4 hook (NF_INET_LOCAL_IN), 攔截 DNS 回應封包.
     memset(&nf_hook_inet_local_in, 0, sizeof(nf_hook_inet_local_in));
@@ -443,15 +486,27 @@ static int __init main_init(
     nf_hook_inet_local_in.hooknum = NF_INET_LOCAL_IN;
     nf_hook_inet_local_in.priority = NF_IP_PRI_FIRST;
     nf_hook_inet_local_in.hook = handle_dns_hook;
+#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
+    if(nf_register_net_hook(&init_net, &nf_hook_inet_local_in) < 0)
+    {
+        DMSG("call nf_register_net_hook(NF_INET_LOCAL_IN) fail");
+        goto FREE_01;
+    }
+#else
     if(nf_register_hook(&nf_hook_inet_local_in) < 0)
     {
         DMSG("call nf_register_hook(NF_INET_LOCAL_IN) fail");
         goto FREE_01;
     }
+#endif
 
     return 0;
 FREE_02:
+#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
+    nf_unregister_net_hook(&init_net, &nf_hook_inet_local_in);
+#else
     nf_unregister_hook(&nf_hook_inet_local_in);
+#endif
 FREE_01:
     return 0;
 }
@@ -459,8 +514,13 @@ FREE_01:
 static void __exit main_exit(
     void)
 {
+#if KERNEL_VERSION(4, 13, 0) <= LINUX_VERSION_CODE
+    nf_unregister_net_hook(&init_net, &nf_hook_inet_local_in);
+    nf_unregister_net_hook(&init_net, &nf_hook_inet_local_out);
+#else
     nf_unregister_hook(&nf_hook_inet_local_in);
     nf_unregister_hook(&nf_hook_inet_local_out);
+#endif
 
     return;
 }
