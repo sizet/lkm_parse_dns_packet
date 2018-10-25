@@ -418,7 +418,7 @@ static unsigned int handle_dns_hook(
 }
 #elif (KERNEL_VERSION(4, 1, 0) <= LINUX_VERSION_CODE) && \
       (LINUX_VERSION_CODE < KERNEL_VERSION(4, 4, 0))
-// 4.1.0 <= k < 4.4.0
+// 4.1.0 <= kernel < 4.4.0
 static unsigned int handle_dns_hook(
     const struct nf_hook_ops *ops,
     struct sk_buff *skb,
